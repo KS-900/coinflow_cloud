@@ -101,3 +101,72 @@ Ticket the phases before you write any code. Sized, with acceptance criteria, WI
 Ask early when you are stuck. There is no credit for a week lost to an IAM policy. There is credit for asking on day one and writing down what the actual problem was.
 
 Tell me before you provision anything with an hourly charge. Kinesis, Redshift, MWAA, NAT Gateways. Those four are the ones that hurt.
+
+**One-time setup**
+
+Install the AWS CLI v2 if you do not have it. Check with aws --version, it must say aws-cli/2.x. On Mac, brew install awscli.
+
+Activate your account. You will get an email inviting you to the AWS access portal. Set your password and enrol an MFA app (Google Authenticator, Authy, whatever you use). You cannot log in without MFA, that is deliberate.
+
+**Configure your CLI profile. Run this once:**
+
+aws configure sso
+
+Answer the prompts:
+
+SSO session name: mojima
+SSO start URL: https://d-c6677f0617.awsapps.com/start
+SSO region: af-south-1
+SSO registration scopes: [press enter for the default]
+
+A browser opens, you sign in, you approve the request. Back in the terminal it shows you the account and role. Pick:
+
+Account: Sandbox (939898395367)
+Role: SandboxEngineer
+
+Then finish the prompts:
+
+CLI default client Region: af-south-1
+CLI default output format: json
+CLI profile name: sandbox
+
+That writes a profile called sandbox into ~/.aws/config. You only do this once.
+
+Every working session
+
+Your credentials expire (4 hours). When they do, log in again:
+
+aws sso login --profile sandbox
+
+Then either prefix every command with the profile:
+
+aws s3 ls --profile sandbox
+
+or set it for the whole terminal session so you can forget about it:
+
+export AWS_PROFILE=sandbox
+
+Put that export in your shell profile if you like, since this is the only account you use here.
+
+Check it worked
+aws sts get-caller-identity
+
+You want to see account 939898395367 and an assumed-role ARN ending in SandboxEngineer. If you see that, you are in.
+
+Terraform picks this up for free
+
+The AWS provider reads the same profile, so you do not configure credentials in Terraform at all. Your provider block is just:
+
+hcl
+provider "aws" {
+  region  = "af-south-1"
+  profile = "sandbox"
+}
+
+Run aws sso login --profile sandbox before a terraform apply if your session has expired. If Terraform complains about expired or missing credentials, that is almost always the fix.
+
+Things that will trip you up
+
+Everything lives in af-south-1 (Cape Town). If you create something in another region it will fail, the account is locked to Cape Town on purpose. If a command hangs or denies for no obvious reason, check your region first.
+
+"Token has expired" or "sso session expired" just means log in again. It is not a broken setup.
