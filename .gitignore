@@ -1,4 +1,7 @@
+# Ignore Terraform state files and build artifacts
 .terraform/
 *.tfstate
 *.tfstate.backup
 terraform.tfvars
+lambda/build/
+lambda/*.zip
