@@ -9,7 +9,7 @@ variable "coingecko_api_key" {
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambda/build"
-  output_path = "${path.module}/lambda/coin_markets_ingest.zip"
+  output_path = "${path.module}/lambda/coin_history_ingest.zip"
 }
 
 # Who is allowed to "be" this role: the Lambda service
@@ -24,7 +24,7 @@ data "aws_iam_policy_document" "assume" {
 }
 
 resource "aws_iam_role" "lambda" {
-  name               = "coin_markets_ingest-role"
+  name               = "coin_history_ingest-role"
   assume_role_policy = data.aws_iam_policy_document.assume.json
 }
 
@@ -32,7 +32,7 @@ resource "aws_iam_role" "lambda" {
 data "aws_iam_policy_document" "lambda_perms" {
   statement {
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.raw.arn}/raw/coins_markets/*"]
+    resources = ["${aws_s3_bucket.raw.arn}/raw/coins_history/*"]
   }
   statement {
     actions = [
@@ -45,15 +45,15 @@ data "aws_iam_policy_document" "lambda_perms" {
 }
 
 resource "aws_iam_role_policy" "lambda" {
-  name   = "coin_markets_ingest-policy"
+  name   = "coin_history_ingest-policy"
   role   = aws_iam_role.lambda.id
   policy = data.aws_iam_policy_document.lambda_perms.json
 }
 
-resource "aws_lambda_function" "coin_markets_ingest" {
-  function_name    = "coin_markets_ingest"
+resource "aws_lambda_function" "coin_history_ingest" {
+  function_name    = "coin_history_ingest"
   role             = aws_iam_role.lambda.arn
-  handler          = "coin_markets.lambda_handler"
+  handler          = "coin_history.lambda_handler"
   runtime          = "python3.12"
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
@@ -61,7 +61,7 @@ resource "aws_lambda_function" "coin_markets_ingest" {
   memory_size      = 256
 
   environment {
-    variables = {
+    variables = { 
       S3_BUCKET         = aws_s3_bucket.raw.bucket
       COINGECKO_API_KEY = var.coingecko_api_key
     }
