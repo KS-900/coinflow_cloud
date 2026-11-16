@@ -183,3 +183,17 @@ pip install requests -t lambda\build_history `
 copy lambda\coin_history.py lambda\build_history\ "
 
 The above code creates a folder for lambda that has requests, urllib3, certifi, idna and charset_normalizer. with out this you should expect a 'Archive creation error'
+
+TESTING CODE:
+'{"coin_ids":["bitcoin","ethereum"]}' | Out-File -Encoding ascii payload.json
+aws lambda invoke --function-name coin_history_ingest --payload fileb://payload.json out.json
+type out.json
+
+start with provding two coins, pass it to payload. Run function . Identify the type of out put 
+
+Below is how to check for syntax error:
+python -c "import ast; ast.parse(open('lambda/coin_history.py', encoding='utf-8').read()); print('syntax OK')"
+
+HOW TO RUN THE AWS LAMBDA:
+aws lambda invoke --function-name coin_history_ingest --cli-read-timeout 900 out.json
+type out.json
