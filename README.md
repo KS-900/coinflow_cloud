@@ -170,3 +170,16 @@ Things that will trip you up
 Everything lives in af-south-1 (Cape Town). If you create something in another region it will fail, the account is locked to Cape Town on purpose. If a command hangs or denies for no obvious reason, check your region first.
 
 "Token has expired" or "sso session expired" just means log in again. It is not a broken setup.
+
+
+
+
+# New things learnt 
+"
+mkdir lambda\build_history -Force
+pip install requests -t lambda\build_history `
+    --platform manylinux2014_x86_64 --python-version 3.12 `
+    --only-binary=:all: --implementation cp
+copy lambda\coin_history.py lambda\build_history\ "
+
+The above code creates a folder for lambda that has requests, urllib3, certifi, idna and charset_normalizer. with out this you should expect a 'Archive creation error'

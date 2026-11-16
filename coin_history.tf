@@ -1,69 +1,48 @@
-# Lambda Function
-variable "coingecko_api_key" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-# Zips everything in lambda/build into one file
-data "archive_file" "lambda_zip" {
+#no variables in this script causes a duplicate data error. add in variable to avoid this error and call with var.
+data "archive_file" "history_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda/build"
+  source_dir  = "${path.module}/lambda/build_history"
   output_path = "${path.module}/lambda/coin_history_ingest.zip"
 }
 
-# Who is allowed to "be" this role: the Lambda service
-data "aws_iam_policy_document" "assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "lambda" {
+resource "aws_iam_role" "history" {
   name               = "coin_history_ingest-role"
   assume_role_policy = data.aws_iam_policy_document.assume.json
 }
 
-# What the role is allowed to do
-data "aws_iam_policy_document" "lambda_perms" {
+data "aws_iam_policy_document" "history_perms" {
   statement {
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.raw.arn}/raw/coins_history/*"]
+    resources = ["${aws_s3_bucket.raw.arn}/raw/coin_price_history/*"]
   }
   statement {
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:CreateLogStream",
-      "logs:PutLogEvents",
-    ]
+    actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["arn:aws:logs:*:*:*"]
   }
 }
 
-resource "aws_iam_role_policy" "lambda" {
+resource "aws_iam_role_policy" "history" {
   name   = "coin_history_ingest-policy"
-  role   = aws_iam_role.lambda.id
-  policy = data.aws_iam_policy_document.lambda_perms.json
+  role   = aws_iam_role.history.id
+  policy = data.aws_iam_policy_document.history_perms.json
 }
 
-resource "aws_lambda_function" "coin_history_ingest" {
+resource "aws_lambda_function" "history" {
   function_name    = "coin_history_ingest"
-  role             = aws_iam_role.lambda.arn
+  role             = aws_iam_role.history.arn
   handler          = "coin_history.lambda_handler"
   runtime          = "python3.12"
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  filename         = data.archive_file.history_zip.output_path
+  source_code_hash = data.archive_file.history_zip.output_base64sha256
   timeout          = 900
   memory_size      = 256
 
   environment {
-    variables = { 
-      S3_BUCKET         = aws_s3_bucket.raw.bucket
-      COINGECKO_API_KEY = var.coingecko_api_key
+    variables = {
+      S3_BUCKET                   = aws_s3_bucket.raw.bucket
+      COINGECKO_API_KEY           = var.coingecko_api_key
+      COINGECKO_CHART_DAYS        = "90"
+      COINGECKO_REQUEST_DELAY_SEC = "2.5"
     }
   }
 }
