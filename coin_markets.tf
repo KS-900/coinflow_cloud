@@ -1,10 +1,4 @@
 # Lambda Function
-variable "coingecko_api_key" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
 # Zips everything in lambda/build into one file
 data "archive_file" "lambda_zip" {
   type        = "zip"
@@ -63,7 +57,7 @@ resource "aws_lambda_function" "coin_markets_ingest" {
   environment {
     variables = { 
       S3_BUCKET         = aws_s3_bucket.raw.bucket
-      COINGECKO_API_KEY = var.coingecko_api_key
+      COINGECKO_API_KEY = var.api_key
     }
   }
 }

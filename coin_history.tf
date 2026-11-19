@@ -40,7 +40,7 @@ resource "aws_lambda_function" "history" {
   environment {
     variables = {
       S3_BUCKET                   = aws_s3_bucket.raw.bucket
-      COINGECKO_API_KEY           = var.coingecko_api_key
+      COINGECKO_API_KEY           = var.api_key
       COINGECKO_CHART_DAYS        = "90"
       COINGECKO_REQUEST_DELAY_SEC = "2.5"
     }

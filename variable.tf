@@ -9,3 +9,10 @@ variable "s3_bucket_name" {
   type        = string
   default     = "aws-coinflow-s3-bucket"
 }
+
+variable "api_key" {
+  description = "The API key for the CoinGecko API"
+  type        = string
+  sensitive   = true
+  default     = "CG-YDeKBMcSiDvrAtRj3ENdvpQc"
+}
