@@ -1,18 +1,20 @@
 """
-Lambda: CoinGecko /coins/{id}/market_chart -> raw JSON in S3, one object per coin.
+Lambda: CoinGecko /coins/{id}/market_chart -> single upserted JSON file in S3.
 
 S3 layout:
-  raw/coin_price_history/dt=YYYY-MM-DD/chart_days=90/<coin_id>_<run timestamp>.json
+  raw/coin_price_history/chart_days=90/latest.json
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 import requests
 
 logger = logging.getLogger()
@@ -88,12 +90,30 @@ def _time_is_low(context) -> bool:
     return context.get_remaining_time_in_millis() < STOP_BEFORE_TIMEOUT_MS
 
 
+def _load_existing_s3_json(bucket: str, key: str) -> dict:
+    """Fetches the existing JSON object from S3 if it exists; returns {} otherwise."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        content = resp["Body"].read().decode("utf-8")
+        data = json.loads(content)
+        return data if isinstance(data, dict) else {}
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchKey":
+            logger.info("No existing file at s3://%s/%s; starting fresh.", bucket, key)
+            return {}
+        raise
+    except ValueError:
+        logger.warning("Existing file at s3://%s/%s was invalid JSON; overwriting.", bucket, key)
+        return {}
+
+
 def fetch_market_chart(
     session: requests.Session,
     coin_id: str,
     chart_days: int,
     api_key: str | None,
-) -> bytes | None:
+) -> dict | None:
+    """Returns parsed JSON dict for the coin's market chart, or None on failure."""
     params = {"vs_currency": "usd", "days": str(chart_days)}
     headers = {"x-cg-demo-api-key": api_key} if api_key else {}
     url = f"{BASE_URL}/coins/{coin_id}/market_chart"
@@ -125,8 +145,8 @@ def fetch_market_chart(
             return None
         missing = [k for k in EXPECTED_KEYS if k not in payload]
         if missing:
-            logger.warning("%s: response is missing %s (saving it anyway as evidence)", coin_id, missing)
-        return r.content
+            logger.warning("%s: response is missing %s (saving it anyway)", coin_id, missing)
+        return payload
 
     logger.error("Giving up on %s after %d attempts (rate limit)", coin_id, MAX_RETRIES)
     return None
@@ -146,13 +166,16 @@ def lambda_handler(event, context):
     api_key = _optional_demo_api_key()
 
     run_ts = datetime.now(timezone.utc)
-    dt = run_ts.strftime("%Y-%m-%d")
-    stamp = run_ts.strftime("%Y%m%dT%H%M%SZ")
+    # Fixed key ensures updates overwrite the single file without creating duplicates
+    key = f"{RAW_PREFIX}/chart_days={chart_days}/latest.json"
 
-    logger.info("Starting history ingestion: %d coins, chart_days=%d, delay=%.1fs",
-                len(coin_ids), chart_days, delay_sec)
+    logger.info(
+        "Starting history ingestion: %d coins, chart_days=%d, delay=%.1fs",
+        len(coin_ids), chart_days, delay_sec,
+    )
 
     session = requests.Session()
+    fetched_data: dict[str, dict] = {}
     saved: list[str] = []
     failed: list[str] = []
     not_attempted: list[str] = []
@@ -163,35 +186,55 @@ def lambda_handler(event, context):
             logger.error("Running low on time; %d coin(s) not attempted", len(not_attempted))
             break
 
-        body = fetch_market_chart(session, coin_id, chart_days, api_key)
-        if body is None:
+        payload = fetch_market_chart(session, coin_id, chart_days, api_key)
+        if payload is None:
             failed.append(coin_id)
         else:
-            key = f"{RAW_PREFIX}/dt={dt}/chart_days={chart_days}/{coin_id}_{stamp}.json"
-            s3.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ContentType="application/json",
-                Metadata={
-                    "ingested_at": run_ts.isoformat(),
-                    "coin_id": coin_id,
-                    "chart_days": str(chart_days),
-                },
-            )
+            # Store payload along with its specific fetch timestamp
+            fetched_data[coin_id] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "chart_days": chart_days,
+                "data": payload,
+            }
             saved.append(coin_id)
-            logger.info("Saved %s (%d bytes) to s3://%s/%s", coin_id, len(body), bucket, key)
 
         if i < len(coin_ids) - 1 and delay_sec > 0:
             time.sleep(delay_sec)
 
-    logger.info("Run finished: requested=%d saved=%d failed=%d not_attempted=%d",
-                len(coin_ids), len(saved), len(failed), len(not_attempted))
+    # Merge new data into existing S3 data so older coins aren't lost on partial runs
+    if fetched_data:
+        combined_data = _load_existing_s3_json(bucket, key)
+        combined_data.update(fetched_data)
+
+        body_bytes = json.dumps(combined_data, ensure_ascii=False).encode("utf-8")
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body_bytes,
+            ContentType="application/json",
+            Metadata={
+                "ingested_at": run_ts.isoformat(),
+                "total_coins": str(len(combined_data)),
+                "chart_days": str(chart_days),
+            },
+        )
+        logger.info(
+            "Upserted %d coin(s) (total %d in file, %d bytes) to s3://%s/%s",
+            len(fetched_data), len(combined_data), len(body_bytes), bucket, key,
+        )
+
+    logger.info(
+        "Run finished: requested=%d saved=%d failed=%d not_attempted=%d",
+        len(coin_ids), len(saved), len(failed), len(not_attempted),
+    )
 
     if failed or not_attempted:
         raise RuntimeError(
             f"Incomplete run: saved={len(saved)}, failed={failed}, not_attempted={not_attempted}"
         )
 
-    return {"bucket": bucket, "prefix": f"{RAW_PREFIX}/dt={dt}/chart_days={chart_days}/",
-            "saved": len(saved)}
+    return {
+        "bucket": bucket,
+        "key": key,
+        "saved": len(saved),
+    }

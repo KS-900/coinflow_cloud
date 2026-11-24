@@ -19,6 +19,14 @@ data "aws_iam_policy_document" "history_perms" {
     actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["arn:aws:logs:*:*:*"]
   }
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.raw.arn}/raw/coin_price_history/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = ["${aws_s3_bucket.raw.arn}"]
+  }
 }
 
 resource "aws_iam_role_policy" "history" {

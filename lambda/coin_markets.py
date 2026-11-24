@@ -1,19 +1,29 @@
+"""
+Lambda: CoinGecko /coins/markets -> single upserted JSON file in S3
+S3 layout: raw/coins_markets/latest.json
+"""
+from __future__ import annotations
+
+import json
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 import requests
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 BASE_URL = "https://api.coingecko.com/api/v3"
 RAW_PREFIX = "raw/coins_markets"
 MAX_RETRIES = 5
 
-# Same endpoint params as ingest_coin_markets.py
 DEFAULT_MARKETS_PARAMS = {
     "vs_currency": "usd",
     "order": "market_cap_desc",
@@ -25,7 +35,6 @@ s3 = boto3.client("s3")
 
 
 def _optional_demo_api_key() -> str | None:
-    # Same env var discipline as the script
     return (
         os.getenv("COINGECKO_API_KEY")
         or os.getenv("CG_DEMO_API_KEY")
@@ -34,14 +43,33 @@ def _optional_demo_api_key() -> str | None:
     )
 
 
-def fetch_coin_markets(session: requests.Session, api_key: str | None) -> tuple[bytes, int]:
+def _load_existing_s3_json(bucket: str, key: str) -> dict:
+    """Fetches the existing JSON object from S3 if it exists; returns {} otherwise."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        content = resp["Body"].read().decode("utf-8")
+        data = json.loads(content)
+        return data if isinstance(data, dict) else {}
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code in ("NoSuchKey", "AccessDenied"):
+            logger.info(
+                "No readable existing file at s3://%s/%s (%s); starting fresh.",
+                bucket, key, error_code,
+            )
+            return {}
+        raise
+    except ValueError:
+        logger.warning("Existing file at s3://%s/%s was invalid JSON; overwriting.", bucket, key)
+        return {}
+
+
+def fetch_coin_markets(session: requests.Session, api_key: str | None) -> list[dict]:
     """
-    GET /coins/markets. Returns (raw response bytes, record count).
-    Retries on 429 using Retry-After (same pattern as the script).
+    GET /coins/markets. Returns parsed list of coin market dicts.
+    Retries on 429 using Retry-After.
     Raises on any failure, so the Lambda invocation is marked as failed.
     """
-    # Key goes in a header, NOT the query string, so it can never
-    # appear in an exception message or a CloudWatch log line.
     headers = {"x-cg-demo-api-key": api_key} if api_key else {}
     url = f"{BASE_URL}/coins/markets"
 
@@ -64,14 +92,13 @@ def fetch_coin_markets(session: requests.Session, api_key: str | None) -> tuple[
 
         r.raise_for_status()
 
-        # Parse ONLY to validate. What we store is r.content, untouched.
         payload = r.json()
         if not isinstance(payload, list) or not payload:
             raise RuntimeError(
                 f"Unexpected markets payload: {type(payload).__name__}, "
                 f"{len(payload) if hasattr(payload, '__len__') else 'n/a'} item(s)"
             )
-        return r.content, len(payload)
+        return payload
 
     raise RuntimeError(f"Giving up on /coins/markets after {MAX_RETRIES} attempts (rate limit)")
 
@@ -81,22 +108,59 @@ def lambda_handler(event, context):
     api_key = _optional_demo_api_key()
 
     logger.info("Starting coin markets ingestion")
-    body, record_count = fetch_coin_markets(requests.Session(), api_key)
+
+    with requests.Session() as session:
+        markets_list = fetch_coin_markets(session, api_key)
 
     now = datetime.now(timezone.utc)
-    key = (
-        f"{RAW_PREFIX}/dt={now:%Y-%m-%d}/"
-        f"coins_markets_{now:%Y%m%dT%H%M%SZ}.json"
-    )
+    now_iso = now.isoformat()
+    key = f"{RAW_PREFIX}/latest.json"
 
-    # Written only after validation, so a failed run leaves nothing in S3.
+    # Key each coin record by its 'id' so updates overwrite existing coins without duplicates
+    fetched_by_id: dict[str, dict] = {}
+    for item in markets_list:
+        coin_id = item.get("id")
+        if coin_id:
+            fetched_by_id[coin_id] = {
+                "updated_at": now_iso,
+                "data": item,
+            }
+
+    # Merge into existing S3 data so older coins outside the top 100 are preserved,
+    # while any returned coin is updated with its most recent data
+    combined_data = _load_existing_s3_json(bucket, key)
+    combined_data.update(fetched_by_id)
+
+    body_bytes = json.dumps(combined_data, ensure_ascii=False).encode("utf-8")
+
     s3.put_object(
         Bucket=bucket,
         Key=key,
-        Body=body,
+        Body=body_bytes,
         ContentType="application/json",
-        Metadata={"ingested_at": now.isoformat(), "record_count": str(record_count)},
+        Metadata={
+            "ingested_at": now_iso,
+            "record_count": str(len(combined_data)),
+        },
     )
 
-    logger.info("Wrote %d records (%d bytes) to s3://%s/%s", record_count, len(body), bucket, key)
-    return {"bucket": bucket, "key": key, "records": record_count}
+    logger.info(
+        "Upserted %d records (total %d in file, %d bytes) to s3://%s/%s",
+        len(fetched_by_id), len(combined_data), len(body_bytes), bucket, key,
+    )
+    return {
+        "bucket": bucket,
+        "key": key,
+        "upserted": len(fetched_by_id),
+        "total_in_file": len(combined_data),
+    }
+
+
+if __name__ == "__main__":
+    try:
+        result = lambda_handler({}, None)
+        logger.info("Completed successfully: %s", json.dumps(result))
+    finally:
+        s3.close()
+        logging.shutdown()
+    sys.exit(0)
