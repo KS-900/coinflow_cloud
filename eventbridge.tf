@@ -8,7 +8,7 @@ resource "aws_iam_role" "scheduler_role" {
       {
         Effect = "Allow"
         Principal = {
-          Service = "://amazonaws.com"
+          Service = "scheduler.amazonaws.com"
         }
         Action = "sts:AssumeRole"
       }
@@ -29,8 +29,8 @@ resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
         Action   = "lambda:InvokeFunction"
         Resource = [
           aws_lambda_function.coin_markets_ingest.arn,
-          aws_lambda_function.coin_history_ingest.arn,
-          aws_lambda_function.coin_categories_ingest.arn
+          aws_lambda_function.history.arn,
+          aws_lambda_function.categories.arn
         ]
       }
     ]
@@ -81,7 +81,7 @@ resource "aws_scheduler_schedule" "coin_history_schedule" {
   }
 
   target {
-    arn      = aws_lambda_function.coin_history_ingest.arn
+    arn      = aws_lambda_function.history.arn
     role_arn = aws_iam_role.scheduler_role.arn
 
 
@@ -108,7 +108,7 @@ resource "aws_scheduler_schedule" "coin_categories_schedule" {
   }
 
   target {
-    arn      = aws_lambda_function.coin_categories_ingest.arn
+    arn      = aws_lambda_function.categories.arn
     role_arn = aws_iam_role.scheduler_role.arn
 
 
